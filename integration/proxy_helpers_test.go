@@ -518,12 +518,12 @@ func makeNodeConfig(nodeName, authAddr string) *service.Config {
 }
 
 func mustCreateUserIdentityFile(t *testing.T, tc *helpers.TeleInstance, username string, ttl time.Duration) string {
-	key, err := libclient.NewKey()
+	key, err := libclient.GenerateKey()
 	require.NoError(t, err)
 	key.ClusterName = tc.Secrets.SiteName
 
 	sshCert, tlsCert, err := tc.Process.GetAuthServer().GenerateUserTestCerts(
-		key.Pub, username, ttl,
+		key.PublicKeyPEM(), username, ttl,
 		constants.CertificateFormatStandard,
 		tc.Secrets.SiteName, "",
 	)

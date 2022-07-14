@@ -324,7 +324,7 @@ func (proxy *ProxyClient) reissueUserCerts(ctx context.Context, cachePolicy Cert
 		// pre-7.0 servers do not accept usage-restricted certificates.
 		if params.RouteToDatabase.ServiceName != "" {
 			key.DBTLSCerts[params.RouteToDatabase.ServiceName] = makeDatabaseClientPEM(
-				params.RouteToDatabase.Protocol, certs.TLS, key.Priv)
+				params.RouteToDatabase.Protocol, certs.TLS, key.PrivateKeyPEM())
 		}
 
 	case proto.UserCertsRequest_SSH:
@@ -333,7 +333,7 @@ func (proxy *ProxyClient) reissueUserCerts(ctx context.Context, cachePolicy Cert
 		key.AppTLSCerts[params.RouteToApp.Name] = certs.TLS
 	case proto.UserCertsRequest_Database:
 		key.DBTLSCerts[params.RouteToDatabase.ServiceName] = makeDatabaseClientPEM(
-			params.RouteToDatabase.Protocol, certs.TLS, key.Priv)
+			params.RouteToDatabase.Protocol, certs.TLS, key.PrivateKeyPEM())
 	case proto.UserCertsRequest_Kubernetes:
 		key.KubeTLSCerts[params.KubernetesCluster] = certs.TLS
 	case proto.UserCertsRequest_WindowsDesktop:
@@ -505,7 +505,7 @@ func (proxy *ProxyClient) IssueUserCertsWithMFA(ctx context.Context, params Reis
 			key.KubeTLSCerts[initReq.KubernetesCluster] = crt.TLS
 		case proto.UserCertsRequest_Database:
 			key.DBTLSCerts[params.RouteToDatabase.ServiceName] = makeDatabaseClientPEM(
-				params.RouteToDatabase.Protocol, crt.TLS, key.Priv)
+				params.RouteToDatabase.Protocol, crt.TLS, key.PrivateKeyPEM())
 		case proto.UserCertsRequest_WindowsDesktop:
 			key.WindowsDesktopCerts[params.RouteToWindowsDesktop.WindowsDesktop] = crt.TLS
 		default:
@@ -538,7 +538,7 @@ func (proxy *ProxyClient) prepareUserCertsRequest(params ReissueParams, key *Key
 	}
 
 	return &proto.UserCertsRequest{
-		PublicKey:             key.Pub,
+		PublicKey:             key.PublicKeyPEM(),
 		Username:              tlsCert.Subject.CommonName,
 		Expires:               tlsCert.NotAfter,
 		RouteToCluster:        params.RouteToCluster,
