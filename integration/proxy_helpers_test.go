@@ -523,7 +523,7 @@ func mustCreateUserIdentityFile(t *testing.T, tc *helpers.TeleInstance, username
 	key.ClusterName = tc.Secrets.SiteName
 
 	sshCert, tlsCert, err := tc.Process.GetAuthServer().GenerateUserTestCerts(
-		key.PublicKeyPEM(), username, ttl,
+		key.SSHPublicKeyPEM(), username, ttl,
 		constants.CertificateFormatStandard,
 		tc.Secrets.SiteName, "",
 	)
