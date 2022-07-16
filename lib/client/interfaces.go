@@ -20,12 +20,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/constants"
 	"github.com/gravitational/teleport/api/identityfile"
-	apiutils "github.com/gravitational/teleport/api/utils"
 	"github.com/gravitational/teleport/api/utils/sshutils"
 	"github.com/gravitational/teleport/api/utils/sshutils/ppk"
 	"github.com/gravitational/teleport/lib/auth"
@@ -34,7 +34,6 @@ import (
 	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
-
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
@@ -96,12 +95,19 @@ type Key struct {
 // GenerateKey generates a new unsigned key. Such key must be signed by a
 // Teleport CA (auth server) before it becomes useful.
 func GenerateKey() (*Key, error) {
-	kp, err := GenerateRSAKeyPair()
+	if ok := os.Getenv("YUBI"); ok != "" {
+		pk, err := NewYkPrivateKey()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return NewKey(pk), nil
+	}
+
+	pk, err := GenerateRSAPrivateKey()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
-	return NewKey(kp), nil
+	return NewKey(pk), nil
 }
 
 func NewKey(kp PrivateKey) (key *Key) {
@@ -196,7 +202,7 @@ func KeyFromIdentityFile(path string) (*Key, error) {
 	}
 
 	return &Key{
-		PrivateKey:  ParseRSAKeyPair(ident.PrivateKey, ssh.MarshalAuthorizedKey(signer.PublicKey())),
+		PrivateKey:  ParseRSAPrivateKey(ident.PrivateKey, ssh.MarshalAuthorizedKey(signer.PublicKey())),
 		Cert:        ident.Certs.SSH,
 		TLSCert:     ident.Certs.TLS,
 		TrustedCA:   trustedCA,
@@ -306,11 +312,11 @@ func (k *Key) clientTLSConfig(cipherSuites []uint16, tlsCertRaw []byte, clusters
 	tlsConfig.Certificates = append(tlsConfig.Certificates, tlsCert)
 	// Use Issuer CN from the certificate to populate the correct SNI in
 	// requests.
-	leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
-	if err != nil {
-		return nil, trace.Wrap(err, "failed to parse TLS cert")
-	}
-	tlsConfig.ServerName = apiutils.EncodeClusterName(leaf.Issuer.CommonName)
+	// leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	// if err != nil {
+	// 	return nil, trace.Wrap(err, "failed to parse TLS cert")
+	// }
+	// tlsConfig.ServerName = apiutils.EncodeClusterName(leaf.Issuer.CommonName)
 	return tlsConfig, nil
 }
 

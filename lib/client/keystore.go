@@ -304,9 +304,15 @@ func (fs *FSLocalKeyStore) GetKey(idx KeyIndex, opts ...CertOption) (*Key, error
 		return nil, trace.ConvertSystemError(err)
 	}
 
+	privateKey, err := ParsePrivateKey(privData, pub)
+	if err != nil {
+		fs.log.Error(err)
+		return nil, trace.ConvertSystemError(err)
+	}
+
 	key := &Key{
 		KeyIndex:   idx,
-		PrivateKey: NewKeyPair(privData, pub),
+		PrivateKey: privateKey,
 		TLSCert:    tlsCert,
 		TrustedCA: []auth.TrustedCerts{{
 			TLSCertificates: tlsCA,
