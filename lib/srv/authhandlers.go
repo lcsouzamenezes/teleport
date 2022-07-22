@@ -60,6 +60,8 @@ var (
 	)
 
 	prometheusCollectors = []prometheus.Collector{failedLoginCount, certificateMismatchCount}
+
+	errFileCopyingNotPermitted = trace.AccessDenied("file copying via SCP or SFTP not permitted")
 )
 
 // AuthHandlerConfig is the configuration for an application handler.
@@ -193,6 +195,13 @@ func (h *AuthHandlers) CheckAgentForward(ctx *ServerContext) error {
 func (h *AuthHandlers) CheckX11Forward(ctx *ServerContext) error {
 	if !ctx.Identity.AccessChecker.PermitX11Forwarding() {
 		return trace.AccessDenied("x11 forwarding not permitted")
+	}
+	return nil
+}
+
+func (h *AuthHandlers) CheckFileCopying(ctx *ServerContext) error {
+	if !ctx.Identity.AccessChecker.CanCopyFiles() {
+		return errFileCopyingNotPermitted
 	}
 	return nil
 }

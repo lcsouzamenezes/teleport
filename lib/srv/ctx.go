@@ -341,6 +341,10 @@ type ServerContext struct {
 	// populated for port forwarding requests.
 	DstAddr string
 
+	// AllowFileCopying controls if remote file operations via SCP/SFTP are allowed
+	// by the server.
+	AllowFileCopying bool
+
 	// x11rdy{r,w} is used to signal from the child process to the
 	// parent process when X11 forwarding is set up.
 	x11rdyr *os.File

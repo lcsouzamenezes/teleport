@@ -49,6 +49,10 @@ const (
 	defaultLoginDefsPath = "/etc/login.defs"
 )
 
+var (
+	ErrFileCopyingNotPermitted = trace.AccessDenied("node does not allow file copying via SCP or SFTP")
+)
+
 // ExecResult is used internally to send the result of a command execution from
 // a goroutine to SSH request handler and back to the calling client
 type ExecResult struct {
@@ -241,6 +245,13 @@ func (e *localExec) transformSecureCopy() error {
 		return nil
 	}
 
+	if !e.Ctx.AllowFileCopying {
+		return ErrFileCopyingNotPermitted
+	}
+	if !e.Ctx.Identity.AccessChecker.CanCopyFiles() {
+		return errFileCopyingNotPermitted
+	}
+
 	// for scp requests update the command to execute to launch teleport with
 	// scp parameters just like openssh does.
 	teleportBin, err := os.Executable()
@@ -359,6 +370,7 @@ func (e *remoteExec) PID() int {
 	return 0
 }
 
+// HERE
 func emitExecAuditEvent(ctx *ServerContext, cmd string, execErr error) {
 	// Create common fields for event.
 	serverMeta := apievents.ServerMetadata{
