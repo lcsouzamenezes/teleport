@@ -121,7 +121,6 @@ func sidecarRole(roleName string) (types.Role, error) {
 func (opts *Options) CheckAndSetDefaults() error {
 	if opts.Addr == "" {
 		opts.Addr = DefaultLocalAddr
-
 	}
 	if opts.ConfigPath == "" {
 		opts.ConfigPath = DefaultConfigPath
