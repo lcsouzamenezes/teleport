@@ -227,18 +227,13 @@ func NewForwarder(cfg ForwarderConfig) (*Forwarder, error) {
 		checkImpersonation = cfg.CheckImpersonationPermissions
 	}
 
-	creds, err := getKubeCreds(cfg.Context, log, cfg.ClusterName, cfg.KubeClusterName, cfg.KubeconfigPath, cfg.KubeServiceType, checkImpersonation)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	clientCredentials, err := ttlmap.New(defaults.ClientCacheSize)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 	closeCtx, close := context.WithCancel(cfg.Context)
 	fwd := &Forwarder{
-		creds:             creds,
+
 		log:               log,
 		router:            *httprouter.New(),
 		cfg:               cfg,
@@ -251,6 +246,12 @@ func NewForwarder(cfg ForwarderConfig) (*Forwarder, error) {
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 		},
+	}
+
+	// FIXME: last arg
+	fwd.creds, err = getKubeCreds(cfg.Context, log, cfg.ClusterName, cfg.KubeClusterName, cfg.KubeconfigPath, cfg.KubeServiceType, checkImpersonation, true, fwd.getStaticLabels())
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	fwd.router.UseRawPath = true
@@ -296,7 +297,7 @@ type Forwarder struct {
 	ctx context.Context
 	// creds contain kubernetes credentials for multiple clusters.
 	// map key is cluster name.
-	creds        map[string]*kubeCreds
+	creds        map[string]kubeCreds
 	rwMutexCreds sync.RWMutex
 	// sessions tracks in-flight sessions
 	sessions map[uuid.UUID]*session
@@ -839,8 +840,9 @@ func (f *Forwarder) join(ctx *authContext, w http.ResponseWriter, req *http.Requ
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
+	f.mu.Lock()
 	session := f.sessions[sessionID]
+	f.mu.Unlock()
 	if session == nil {
 		return nil, trace.NotFound("session %v not found", sessionID)
 	}
@@ -1234,7 +1236,9 @@ func (f *Forwarder) exec(ctx *authContext, w http.ResponseWriter, req *http.Requ
 	}
 
 	<-party.closeC
+	f.mu.Lock()
 	delete(f.sessions, session.id)
+	f.mu.Unlock()
 	return nil, nil
 }
 
@@ -1362,7 +1366,7 @@ func (f *Forwarder) setupForwardingHeaders(sess *clusterSession, req *http.Reque
 	// TODO(smallinsky) UPDATE IN 11.0. use KubeTeleportProxyALPNPrefix instead.
 	req.URL.Host = fmt.Sprintf("%s%s", constants.KubeSNIPrefix, constants.APIDomain)
 	if sess.creds != nil {
-		req.URL.Host = sess.creds.targetAddr
+		req.URL.Host = sess.creds.targetAddress()
 	}
 
 	// add origin headers so the service consuming the request on the other site
@@ -1573,7 +1577,7 @@ func (f *Forwarder) getDialer(ctx authContext, sess *clusterSession, req *http.R
 type clusterSession struct {
 	authContext
 	parent    *Forwarder
-	creds     *kubeCreds
+	creds     kubeCreds
 	tlsConfig *tls.Config
 	forwarder *forward.Forwarder
 	// noAuditEvents is true if this teleport service should leave audit event
@@ -1757,8 +1761,8 @@ func (f *Forwarder) newClusterSessionLocal(ctx authContext) (*clusterSession, er
 		parent:               f,
 		authContext:          ctx,
 		creds:                creds,
-		kubeClusterEndpoints: []kubeClusterEndpoint{{addr: creds.targetAddr}},
-		tlsConfig:            creds.tlsConfig,
+		kubeClusterEndpoints: []kubeClusterEndpoint{{addr: creds.targetAddress()}},
+		tlsConfig:            creds.tlsConfiguration(),
 	}, nil
 }
 
@@ -2005,10 +2009,12 @@ func (f *Forwarder) requestCertificate(ctx authContext) (*tls.Config, error) {
 // getStaticLabels gets the labels that the forwarder should present as static,
 // which includes EC2 labels if available.
 func (f *Forwarder) getStaticLabels() map[string]string {
-	if f.cfg.CloudLabels == nil {
-		return f.cfg.StaticLabels
+	labels := map[string]string{}
+	if f.cfg.CloudLabels != nil {
+		for k, v := range f.cfg.CloudLabels.Get() {
+			labels[k] = v
+		}
 	}
-	labels := f.cfg.CloudLabels.Get()
 	// Let static labels override ec2 labels.
 	for k, v := range f.cfg.StaticLabels {
 		labels[k] = v
@@ -2025,16 +2031,9 @@ func (f *Forwarder) kubeClusters() []*types.KubernetesClusterV3 {
 	res := make([]*types.KubernetesClusterV3, 0, len(f.creds))
 	f.rwMutexCreds.RLock()
 	defer f.rwMutexCreds.RUnlock()
-	for n := range f.creds {
-		cluster, err := types.NewKubernetesClusterV3(
-			types.Metadata{
-				Name:   n,
-				Labels: f.getStaticLabels(),
-			},
-			types.KubernetesClusterSpecV3{
-				DynamicLabels: dynLabels,
-			},
-		)
+	for n, creds := range f.creds {
+
+		cluster, err := newKubeCluster(n, creds, dynLabels)
 		if err != nil {
 			// TODO: log stuff here
 			continue
@@ -2086,4 +2085,17 @@ func (r *responseStatusRecorder) getStatus() int {
 		return http.StatusOK
 	}
 	return r.status
+}
+
+func newKubeCluster(name string, creds kubeCreds, dynLabels map[string]types.CommandLabelV2) (*types.KubernetesClusterV3, error) {
+	return types.NewKubernetesClusterV3(
+		types.Metadata{
+			Name:   name,
+			Labels: creds.getStaticLabels(),
+		},
+		types.KubernetesClusterSpecV3{
+			DynamicLabels: dynLabels,
+		},
+	)
+
 }

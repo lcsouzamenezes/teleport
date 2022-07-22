@@ -537,7 +537,7 @@ func TestAuthenticate(t *testing.T) {
 			req = req.WithContext(ctx)
 
 			if tt.haveKubeCreds {
-				f.creds = map[string]*kubeCreds{tt.routeToCluster: {targetAddr: "k8s.example.com"}}
+				f.creds = map[string]kubeCreds{tt.routeToCluster: &staticKubeCreds{targetAddr: "k8s.example.com"}}
 			} else {
 				f.creds = nil
 			}
@@ -704,8 +704,8 @@ func TestNewClusterSessionLocal(t *testing.T) {
 	authCtx := mockAuthCtx(ctx, t, "kube-cluster", false)
 
 	// Set creds for kube cluster local
-	f.creds = map[string]*kubeCreds{
-		"local": {
+	f.creds = map[string]kubeCreds{
+		"local": &staticKubeCreds{
 			targetAddr: "k8s.example.com:443",
 			tlsConfig: &tls.Config{
 				Certificates: []tls.Certificate{
@@ -736,11 +736,11 @@ func TestNewClusterSessionLocal(t *testing.T) {
 	authCtx.kubeCluster = "local"
 	sess, err := f.newClusterSession(authCtx)
 	require.NoError(t, err)
-	require.Equal(t, []kubeClusterEndpoint{{addr: f.creds["local"].targetAddr}}, sess.kubeClusterEndpoints)
+	require.Equal(t, []kubeClusterEndpoint{{addr: f.creds["local"].targetAddress()}}, sess.kubeClusterEndpoints)
 
 	// Make sure newClusterSession used provided creds
 	// instead of requesting a Teleport client cert.
-	require.Equal(t, f.creds["local"].tlsConfig, sess.tlsConfig)
+	require.Equal(t, f.creds["local"].tlsConfiguration(), sess.tlsConfig)
 	require.Nil(t, f.cfg.AuthClient.(*mockCSRClient).lastCert)
 	require.Empty(t, 0, f.clientCredentials.Len())
 }
@@ -887,8 +887,8 @@ func TestKubeFwdHTTPProxyEnv(t *testing.T) {
 		return rt
 	}
 
-	f.creds = map[string]*kubeCreds{
-		"local": {
+	f.creds = map[string]kubeCreds{
+		"local": &staticKubeCreds{
 			targetAddr: mockKubeAPI.URL,
 			tlsConfig:  mockKubeAPI.TLS,
 			transportConfig: &transport.Config{
@@ -900,7 +900,7 @@ func TestKubeFwdHTTPProxyEnv(t *testing.T) {
 	authCtx.kubeCluster = "local"
 	sess, err := f.newClusterSession(authCtx)
 	require.NoError(t, err)
-	require.Equal(t, []kubeClusterEndpoint{{addr: f.creds["local"].targetAddr}}, sess.kubeClusterEndpoints)
+	require.Equal(t, []kubeClusterEndpoint{{addr: f.creds["local"].targetAddress()}}, sess.kubeClusterEndpoints)
 
 	sess.tlsConfig.InsecureSkipVerify = true
 

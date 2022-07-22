@@ -19,20 +19,24 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
 
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/gravitational/teleport"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/kube/watcher"
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/multiplexer"
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/srv"
+	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
@@ -62,6 +66,8 @@ type TLSServerConfig struct {
 	Log log.FieldLogger
 	// AWSMatcher are used to match EKS clusters.
 	AWSMatchers []services.AWSMatcher
+	// CloudClients are used to connect to cloud APIs for automatic discovery.
+	CloudClients common.CloudClients
 }
 
 // CheckAndSetDefaults checks and sets default values
@@ -92,6 +98,9 @@ func (c *TLSServerConfig) CheckAndSetDefaults() error {
 		c.ConnectedProxyGetter = reversetunnel.NewConnectedProxyGetter()
 	}
 
+	if c.CloudClients == nil {
+		c.CloudClients = common.NewCloudClients()
+	}
 	return nil
 }
 
@@ -103,6 +112,7 @@ type TLSServer struct {
 	fwd          *Forwarder
 	mu           sync.Mutex
 	listener     net.Listener
+	watcher      *watcher.Watcher
 	heartbeats   map[string]*srv.Heartbeat
 	closeContext context.Context
 	closeFunc    context.CancelFunc
@@ -146,6 +156,12 @@ func NewTLSServer(cfg TLSServerConfig) (*TLSServer, error) {
 		},
 		heartbeats: make(map[string]*srv.Heartbeat),
 	}
+	if len(cfg.AWSMatchers) > 0 && cfg.KubeServiceType == KubeService {
+		if server.watcher, err = watcher.NewWatcher(fwd.ctx, cfg.AWSMatchers, cfg.CloudClients, server.dynamicKubediscoveryAction, server.Log); err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
 	server.TLS.GetConfigForClient = server.GetConfigForClient
 	server.closeContext, server.closeFunc = context.WithCancel(cfg.Context)
 
@@ -186,7 +202,7 @@ func (t *TLSServer) Serve(listener net.Listener) error {
 		log.Debugf("Starting kubernetes_service heartbeats for %q", t.Component)
 		for _, cluster := range t.fwd.kubeClusters() {
 
-			if err := t.startHeartbeat(t.closeContext, cluster); err != nil {
+			if err := t.startHeartbeat(t.closeContext, cluster.GetName()); err != nil {
 				return trace.Wrap(err)
 			}
 		}
@@ -194,6 +210,9 @@ func (t *TLSServer) Serve(listener net.Listener) error {
 		log.Debug("No local kube credentials on proxy, will not start kubernetes_service heartbeats")
 	}
 
+	if t.watcher != nil {
+		go t.watcher.Start()
+	}
 	return t.Server.Serve(tls.NewListener(mux.TLS(), t.TLS))
 }
 
@@ -215,15 +234,15 @@ func (t *TLSServer) GetConfigForClient(info *tls.ClientHelloInfo) (*tls.Config, 
 
 // getServerInfoFunc returns function that the heartbeater uses to report the
 // provided cluster to the auth server.
-func (t *TLSServer) getServerInfoFunc(cluster types.KubeCluster) func() (types.Resource, error) {
+func (t *TLSServer) getServerInfoFunc(name string) func() (types.Resource, error) {
 	return func() (types.Resource, error) {
-		return t.getServerInfo(cluster)
+		return t.getServerInfo(name)
 	}
 }
 
 // GetServerInfo returns a services.Server object for heartbeats (aka
 // presence).
-func (t *TLSServer) getServerInfo(cluster types.KubeCluster) (types.Resource, error) {
+func (t *TLSServer) getServerInfo(name string) (types.Resource, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var addr string
@@ -233,19 +252,30 @@ func (t *TLSServer) getServerInfo(cluster types.KubeCluster) (types.Resource, er
 		addr = t.listener.Addr().String()
 	}
 
+	var cluster types.KubeCluster
+
+	for _, kubeCluster := range t.fwd.kubeClusters() {
+		if name == kubeCluster.GetName() {
+			cluster = kubeCluster
+			break
+		}
+	}
+	if cluster == nil {
+		return nil, fmt.Errorf("cluster %s not found", name)
+	}
 	// Both proxy and kubernetes services can run in the same instance (same
 	// cluster names). Add a name suffix to make them distinct.
 	//
 	// Note: we *don't* want to add suffix for kubernetes_service!
 	// This breaks reverse tunnel routing, which uses server.Name.
-	name := cluster.GetName()
+	svcName := cluster.GetName()
 	if t.KubeServiceType != KubeService {
-		name += "-proxy_service"
+		svcName += "-proxy_service"
 	}
 
 	srv, err := types.NewKubernetesServerV3(
 		types.Metadata{
-			Name:      name,
+			Name:      svcName,
 			Namespace: t.Namespace,
 		},
 		types.KubernetesServerSpecV3{
@@ -265,14 +295,14 @@ func (t *TLSServer) getServerInfo(cluster types.KubeCluster) (types.Resource, er
 }
 
 // startHeartbeat starts the registration heartbeat to the auth server.
-func (t *TLSServer) startHeartbeat(ctx context.Context, kubeCluster types.KubeCluster) error {
+func (t *TLSServer) startHeartbeat(ctx context.Context, name string) error {
 
 	heartbeat, err := srv.NewHeartbeat(srv.HeartbeatConfig{
 		Mode:            srv.HeartbeatModeKube,
 		Context:         t.TLSServerConfig.Context,
 		Component:       t.TLSServerConfig.Component,
 		Announcer:       t.TLSServerConfig.AuthClient,
-		GetServerInfo:   t.getServerInfoFunc(kubeCluster),
+		GetServerInfo:   t.getServerInfoFunc(name),
 		KeepAlivePeriod: apidefaults.ServerKeepAliveTTL(),
 		AnnouncePeriod:  apidefaults.ServerAnnounceTTL/2 + utils.RandomDuration(apidefaults.ServerAnnounceTTL/10),
 		ServerTTL:       apidefaults.ServerAnnounceTTL,
@@ -284,10 +314,24 @@ func (t *TLSServer) startHeartbeat(ctx context.Context, kubeCluster types.KubeCl
 		return trace.Wrap(err)
 	}
 	go heartbeat.Run()
+	fmt.Println("starting heartbeat")
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.heartbeats[kubeCluster.GetName()] = heartbeat
+	t.heartbeats[name] = heartbeat
+	fmt.Println("leaving heartbeat")
 	return nil
+}
+
+// stopHeartbeat stops the registration heartbeat to the auth server.
+func (t *TLSServer) stopHeartbeat(name string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	heartbeat, ok := t.heartbeats[name]
+	if !ok {
+		return nil
+	}
+	delete(t.heartbeats, name)
+	return trace.Wrap(heartbeat.Close())
 }
 
 // getRotationState is a helper to return this server's CA rotation state.
@@ -300,4 +344,54 @@ func (t *TLSServer) getRotationState() types.Rotation {
 		return *rotation
 	}
 	return types.Rotation{}
+}
+
+func (t *TLSServer) dynamicKubediscoveryAction(ctx context.Context, operation watcher.Operation, cluster *eks.Cluster) {
+	switch operation {
+	case watcher.OperationCreate:
+		if err := t.addServer(ctx, cluster); err != nil {
+			t.Log.Warnf("unable to add cluster %s: %v", *cluster.Name)
+		}
+	case watcher.OperationUpdate:
+		if err := t.updateServer(cluster); err != nil {
+			t.Log.Warnf("unable to update cluster %s: %v", *cluster.Name)
+		}
+	case watcher.OperationDelete:
+		if err := t.stopServer(ctx, *cluster.Name); err != nil {
+			t.Log.Warnf("unable to remove cluster %s: %v", *cluster.Name)
+		}
+	}
+
+}
+
+func (t *TLSServer) addServer(ctx context.Context, cluster *eks.Cluster) error {
+	if err := t.fwd.addKubeCluster(cluster); err != nil {
+		return trace.Wrap(err)
+	}
+	return trace.Wrap(t.startHeartbeat(ctx, *cluster.Name))
+}
+
+func (t *TLSServer) updateServer(cluster *eks.Cluster) error {
+	return trace.Wrap(t.fwd.updateKubeCluster(cluster))
+}
+
+func (t *TLSServer) stopServer(ctx context.Context, name string) error {
+	if err := t.deleteKubernetesServer(ctx, name); err != nil {
+		//TODO: add logging here
+	}
+	errHeart := t.stopHeartbeat(name)
+	fmt.Println("stoped heartbeat")
+
+	errRemove := t.fwd.removeKubeCluster(name)
+	fmt.Println("r heartbeat")
+	return trace.NewAggregate(errHeart, errRemove)
+}
+
+// deleteKubernetesServer deletes kubernetes server for the specified cluster.
+func (t *TLSServer) deleteKubernetesServer(ctx context.Context, name string) error {
+	err := t.AuthClient.DeleteKubernetesServer(ctx, t.HostID, name)
+	if err != nil && !trace.IsNotFound(err) {
+		return trace.Wrap(err)
+	}
+	return nil
 }

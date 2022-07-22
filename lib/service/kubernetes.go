@@ -265,6 +265,7 @@ func (process *TeleportProcess) initKubernetesService(log *logrus.Entry, conn *C
 		GetRotation:          process.getRotation,
 		ConnectedProxyGetter: proxyGetter,
 		AWSMatchers:          cfg.Kube.AWSMatchers,
+		Log:                  process.log,
 	})
 	if err != nil {
 		return trace.Wrap(err)

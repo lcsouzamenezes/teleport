@@ -202,17 +202,15 @@ func TestGetServerInfo(t *testing.T) {
 		},
 		fwd: &Forwarder{
 			cfg: ForwarderConfig{},
+			creds: map[string]kubeCreds{
+				"kube-cluster": &staticKubeCreds{},
+			},
 		},
 		listener: listener,
 	}
 
 	t.Run("GetServerInfo gets listener addr with PublicAddr unset", func(t *testing.T) {
-		serverInfo, err := srv.getServerInfo(&types.KubernetesClusterV3{
-			Metadata: types.Metadata{
-				Name: "kube-cluster",
-			},
-			Spec: types.KubernetesClusterSpecV3{},
-		})
+		serverInfo, err := srv.getServerInfo("kube-cluster")
 		require.NoError(t, err)
 
 		kubeServer, ok := serverInfo.(types.KubeServer)
@@ -224,11 +222,7 @@ func TestGetServerInfo(t *testing.T) {
 	t.Run("GetServerInfo gets correct public addr with PublicAddr set", func(t *testing.T) {
 		srv.TLSServerConfig.ForwarderConfig.PublicAddr = "k8s.example.com"
 
-		serverInfo, err := srv.getServerInfo(&types.KubernetesClusterV3{
-			Metadata: types.Metadata{
-				Name: "kube-cluster",
-			},
-		})
+		serverInfo, err := srv.getServerInfo("kube-cluster")
 		require.NoError(t, err)
 
 		kubeServer, ok := serverInfo.(types.KubeServer)

@@ -3573,6 +3573,8 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 			AccessPoint:   accessPoint,
 			GetRotation:   process.getRotation,
 			OnHeartbeat:   process.onHeartbeat(component),
+			AWSMatchers:   cfg.Kube.AWSMatchers,
+			Log:           process.log,
 		})
 		if err != nil {
 			return trace.Wrap(err)

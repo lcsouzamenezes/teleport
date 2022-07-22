@@ -42,19 +42,47 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
-// kubeCreds contain authentication-related fields from kubeconfig.
+// staticKubeCreds contain authentication-related fields from kubeconfig.
 //
 // TODO(awly): make this an interface, one implementation for local k8s cluster
 // and another for a remote teleport cluster.
-type kubeCreds struct {
+type staticKubeCreds struct {
 	// tlsConfig contains (m)TLS configuration.
 	tlsConfig *tls.Config
 	// transportConfig contains HTTPS-related configuration.
 	// Note: use wrapTransport method if working with http.RoundTrippers.
 	transportConfig *transport.Config
 	// targetAddr is a kubernetes API address.
-	targetAddr string
-	kubeClient *kubernetes.Clientset
+	targetAddr   string
+	kubeClient   *kubernetes.Clientset
+	staticLabels map[string]string
+}
+
+func (s *staticKubeCreds) tlsConfiguration() *tls.Config {
+	return s.tlsConfig
+}
+func (s *staticKubeCreds) transportConfiguration() *transport.Config {
+	return s.transportConfig
+}
+func (s *staticKubeCreds) targetAddress() string {
+	return s.targetAddr
+}
+func (s *staticKubeCreds) kubernetesClient() *kubernetes.Clientset {
+	return s.kubeClient
+}
+
+func (s *staticKubeCreds) getStaticLabels() map[string]string {
+	return s.staticLabels
+}
+
+type kubeCreds interface {
+	tlsConfiguration() *tls.Config
+	transportConfiguration() *transport.Config
+	targetAddress() string
+	kubernetesClient() *kubernetes.Clientset
+	wrapTransport(http.RoundTripper) (http.RoundTripper, error)
+	getStaticLabels() map[string]string
+	close() error
 }
 
 // ImpersonationPermissionsChecker describes a function that can be used to check
@@ -83,7 +111,7 @@ type ImpersonationPermissionsChecker func(ctx context.Context, clusterName strin
 //   - if loading from kubeconfig, all contexts are returned
 //   - if no credentials are loaded, returns an error
 //   - permission self-test failures cause an error to be returned
-func getKubeCreds(ctx context.Context, log logrus.FieldLogger, tpClusterName, kubeClusterName, kubeconfigPath string, serviceType KubeServiceType, checkImpersonation ImpersonationPermissionsChecker) (map[string]*kubeCreds, error) {
+func getKubeCreds(ctx context.Context, log logrus.FieldLogger, tpClusterName, kubeClusterName, kubeconfigPath string, serviceType KubeServiceType, checkImpersonation ImpersonationPermissionsChecker, hasDynamicConfig bool, labels map[string]string) (map[string]kubeCreds, error) {
 	log.
 		WithField("kubeconfigPath", kubeconfigPath).
 		WithField("kubeClusterName", kubeClusterName).
@@ -92,7 +120,7 @@ func getKubeCreds(ctx context.Context, log logrus.FieldLogger, tpClusterName, ku
 
 	// Proxy service should never have creds, forwards to kube service
 	if serviceType == ProxyService {
-		return map[string]*kubeCreds{}, nil
+		return map[string]kubeCreds{}, nil
 	}
 
 	// Load kubeconfig or local pod credentials.
@@ -105,11 +133,13 @@ func getKubeCreds(ctx context.Context, log logrus.FieldLogger, tpClusterName, ku
 	if trace.IsNotFound(err) || len(cfg.Contexts) == 0 {
 		switch serviceType {
 		case KubeService:
-			return nil, trace.BadParameter("no Kubernetes credentials found; Kubernetes_service requires either a valid kubeconfig_file or to run inside of a Kubernetes pod")
+			if !hasDynamicConfig {
+				return nil, trace.BadParameter("no Kubernetes credentials found; Kubernetes_service requires either a valid kubeconfig_file or to run inside of a Kubernetes pod")
+			}
 		case LegacyProxyService:
 			log.Debugf("Could not load Kubernetes credentials. This proxy will still handle Kubernetes requests for trusted teleport clusters or Kubernetes nodes in this teleport cluster")
 		}
-		return map[string]*kubeCreds{}, nil
+		return map[string]kubeCreds{}, nil
 	}
 
 	if serviceType == LegacyProxyService {
@@ -127,10 +157,10 @@ func getKubeCreds(ctx context.Context, log logrus.FieldLogger, tpClusterName, ku
 		}
 	}
 
-	res := make(map[string]*kubeCreds, len(cfg.Contexts))
+	res := make(map[string]kubeCreds, len(cfg.Contexts))
 	// Convert kubeconfig contexts into kubeCreds.
 	for cluster, clientCfg := range cfg.Contexts {
-		clusterCreds, err := extractKubeCreds(ctx, cluster, clientCfg, serviceType, kubeconfigPath, log, checkImpersonation)
+		clusterCreds, err := extractKubeCreds(ctx, cluster, clientCfg, serviceType, kubeconfigPath, log, checkImpersonation, labels)
 		if err != nil {
 			log.WithError(err).Warnf("failed to load credentials for cluster %q.", cluster)
 			continue
@@ -140,7 +170,7 @@ func getKubeCreds(ctx context.Context, log logrus.FieldLogger, tpClusterName, ku
 	return res, nil
 }
 
-func extractKubeCreds(ctx context.Context, cluster string, clientCfg *rest.Config, serviceType KubeServiceType, kubeconfigPath string, log logrus.FieldLogger, checkPermissions ImpersonationPermissionsChecker) (*kubeCreds, error) {
+func extractKubeCreds(ctx context.Context, cluster string, clientCfg *rest.Config, serviceType KubeServiceType, kubeconfigPath string, log logrus.FieldLogger, checkPermissions ImpersonationPermissionsChecker, labels map[string]string) (*staticKubeCreds, error) {
 	log = log.WithField("cluster", cluster)
 
 	log.Debug("Checking Kubernetes impersonation permissions.")
@@ -184,11 +214,12 @@ func extractKubeCreds(ctx context.Context, cluster string, clientCfg *rest.Confi
 	}
 
 	log.Debug("Initialized Kubernetes credentials")
-	return &kubeCreds{
+	return &staticKubeCreds{
 		tlsConfig:       tlsConfig,
 		transportConfig: transportConfig,
 		targetAddr:      targetAddr,
 		kubeClient:      client,
+		staticLabels:    labels,
 	}, nil
 }
 
@@ -207,11 +238,14 @@ func parseKubeHost(host string) (string, error) {
 	return u.Host, nil
 }
 
-func (c *kubeCreds) wrapTransport(rt http.RoundTripper) (http.RoundTripper, error) {
+func (c *staticKubeCreds) wrapTransport(rt http.RoundTripper) (http.RoundTripper, error) {
 	if c == nil {
 		return rt, nil
 	}
 	return transport.HTTPWrappersForConfig(c.transportConfig, rt)
+}
+func (c *staticKubeCreds) close() error {
+	return nil
 }
 
 func checkImpersonationPermissions(ctx context.Context, cluster string, sarClient authztypes.SelfSubjectAccessReviewInterface) error {
