@@ -443,6 +443,9 @@ func NewHandler(cfg Config, opts ...HandlerOption) (*APIHandler, error) {
 	// GET /webapi/sites/:site/desktopplayback/:sid?access_token=<bearer_token>
 	h.GET("/webapi/sites/:site/desktopplayback/:sid", h.WithAuth(h.desktopPlaybackHandle))
 
+	// List Connection Diagnostics
+	h.GET("/webapi/sites/:site/diagnostics/connections/:name", h.WithClusterAuth(h.getConnectionDiagnostic))
+
 	// if Web UI is enabled, check the assets dir:
 	var indexPage *template.Template
 	if cfg.StaticFS != nil {
