@@ -470,26 +470,43 @@ Once the request is resolved, the Slack bot will add an emoji reaction of ✅ or
 ❌ to the Slack message for the access request, depending on whether the request
 was approved or denied.
 
+<Admonition title="Auditing Access Requests">
+
+When the Slack plugin posts an access request notification to a channel, anyone
+with access to the channel can view the notification and follow the link. While
+users must be authorized via their Teleport roles to review access requests, you
+should still check the Teleport audit log to ensure that the right users are
+reviewing the right requests.
+
+When auditing access request reviews, check for events with the type `Access
+Request Reviewed` in the Teleport Web UI <ScopedBlock scope={["oss",
+"enterprise"]}>and `access_request.review` if reviewing the audit log on the
+Auth Service host</ScopedBlock>.
+
+</Admonition>
+
 ## Step 8/8. Set up systemd
 
-In production, we recommend starting the Teleport plugin daemon via an init system like systemd.
-Here's the recommended Teleport plugin service unit file for systemd:
+In production, we recommend starting the Teleport plugin daemon via an init
+system like systemd.  Here's the recommended Teleport plugin service unit file
+for systemd:
 
 ```ini
 (!examples/systemd/plugins/teleport-slack.service!)
 ```
 
-Save this as `teleport-slack.service`.
+Save this as `teleport-slack.service` in either `/usr/lib/systemd/system/` or
+another [unit file load
+paths](https://www.freedesktop.org/software/systemd/man/systemd.unit.html#Unit%20File%20Load%20Path)
+supported by systemd.
 
-## Audit log
+Enable and start the plugin:
 
-The plugin will let anyone with access to the Slack channel approve access
-requests, so it's important to review the Teleport audit log to ensure that only
-the expected users are submitting reviews.
+```code
+$ sudo systemctl enable teleport-slack
+$ sudo systemctl start teleport-slack
+```
 
-When auditing access request reviews, check for events with the type
-`Access Request Reviewed` in the Teleport Web UI 
-<ScopedBlock scope={["oss", "enterprise"]}>and `access_request.review` if reviewing the audit log on the Auth Service host</ScopedBlock>.
 
 ## Next steps
 
