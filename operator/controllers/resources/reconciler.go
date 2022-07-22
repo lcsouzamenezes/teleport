@@ -23,7 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	kclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/gravitational/trace"
 )
@@ -67,7 +67,7 @@ This allow us to progress with smaller changes and avoid a long-running reconcil
 */
 func (r ResourceBaseReconciler) Do(ctx context.Context, req ctrl.Request, obj kclient.Object) (ctrl.Result, error) {
 	// https://sdk.operatorframework.io/docs/building-operators/golang/advanced-topics/#external-resources
-	log := log.FromContext(ctx).WithValues("namespacedname", req.NamespacedName)
+	log := ctrllog.FromContext(ctx).WithValues("namespacedname", req.NamespacedName)
 
 	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
 		if apierrors.IsNotFound(err) {

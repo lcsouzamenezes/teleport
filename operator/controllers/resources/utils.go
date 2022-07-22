@@ -17,6 +17,7 @@ limitations under the License.
 package resources
 
 import (
+	"fmt"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/trace"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,7 +27,10 @@ const (
 	ConditionReasonOriginLabelNotMatching = "OriginLabelNotMatching"
 	ConditionReasonOriginLabelMatching    = "OriginLabelMatching"
 	ConditionReasonNewResource            = "NewResource"
+	ConditionReasonNoError                = "NoError"
+	ConditionReasonTeleportError          = "TeleportError"
 	ConditionTypeTeleportResourceOwned    = "TeleportResourceOwned"
+	ConditionTypeSuccessfullyReconciled   = "SuccessfullyReconciled"
 )
 
 // isResourceOriginKubernetes reads a teleport resource metadata, searches for the origin label and checks its
@@ -67,4 +71,25 @@ func checkOwnership(existingResource types.Resource) (metav1.Condition, error) {
 		Message: "Teleport resource has the Kubernetes origin label.",
 	}
 	return condition, nil
+}
+
+func getReconciliationCondition(err error) metav1.Condition {
+	var condition metav1.Condition
+	if err == nil {
+		condition = metav1.Condition{
+			Type:    ConditionTypeSuccessfullyReconciled,
+			Status:  metav1.ConditionTrue,
+			Reason:  ConditionReasonNoError,
+			Message: "Teleport resource was successfully reconciled, no error was returned by Teleport.",
+		}
+	} else {
+		condition = metav1.Condition{
+			Type:    ConditionTypeSuccessfullyReconciled,
+			Status:  metav1.ConditionFalse,
+			Reason:  ConditionReasonTeleportError,
+			Message: fmt.Sprintf("Teleport returned the error: %s", err),
+		}
+	}
+
+	return condition
 }

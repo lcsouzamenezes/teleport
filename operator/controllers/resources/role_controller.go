@@ -89,20 +89,27 @@ func (r *RoleReconciler) Upsert(ctx context.Context, obj kclient.Object) error {
 		return trace.Wrap(err)
 	}
 
-	newCondition, ownershipErr := checkOwnership(existingResource)
+	newCondition, err := checkOwnership(existingResource)
 	// Setting the condition before returning a potential ownership error
 	meta.SetStatusCondition(&k8sResource.Status.Conditions, newCondition)
 	if err := r.Status().Update(ctx, k8sResource); err != nil {
 		return trace.Wrap(err)
 	}
 
-	if ownershipErr != nil {
-		return trace.Wrap(ownershipErr)
+	if err != nil {
+		return trace.Wrap(err)
 	}
 
 	r.addTeleportResourceOrigin(teleportResource)
 
-	return teleportClient.UpsertRole(ctx, teleportResource)
+	err = teleportClient.UpsertRole(ctx, teleportResource)
+
+	newCondition = getReconciliationCondition(err)
+	meta.SetStatusCondition(&k8sResource.Status.Conditions, newCondition)
+	if err := r.Status().Update(ctx, k8sResource); err != nil {
+		return trace.Wrap(err)
+	}
+	return err
 }
 
 func (r *RoleReconciler) addTeleportResourceOrigin(resource types.Role) {
