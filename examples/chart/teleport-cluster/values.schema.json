@@ -115,7 +115,7 @@
                     "type": "boolean",
                     "default": false
                 },
-                "operatorImage": {
+                "image": {
                     "$id": "#/properties/operator/properties/image",
                     "type": "string",
                     "default": "quay.io/gravitational/teleport-operator"
